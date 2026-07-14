@@ -68,6 +68,16 @@ pid_t  fake_ev_generator_pid = -1;
 #    include "input-sony-prstux.h"
 #elif defined(CERVANTES)
 #    include "input-cervantes.h"
+#else
+// Generic evdev device (e.g. Guowen/OBOOK, Ingenic X2000): no USB-hotplug fake
+// events. generateFakeEvent must exist (input.c calls it), so provide a no-op
+// that just idles -- we simply don't inject charging/OTG synthetic events.
+static void generateFakeEvent(int pipefd[2]) {
+    close(pipefd[0]);
+    while (1) {
+        sleep(3600);
+    }
+}
 #endif
 
 // NOTE: Legacy Kindle systems are too old to support timerfd (and we don't really need it there anyway).

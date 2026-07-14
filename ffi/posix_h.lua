@@ -10,10 +10,18 @@ elseif ffi.os == "OSX" then
 else
     platform_str = ffi.os:lower() .. "_" .. ffi.arch
 end
-local platform = ({ android_arm=0x1, android_arm64=0x2, android_x64=0x4, android_x86=0x8, linux_arm=0x10, linux_arm64=0x20, linux_x64=0x40, macos=0x80 })[platform_str]
+-- OBOOK/mipsel: alias linux_mipsel onto linux_arm's bit (0x10) so it shares the
+-- (arch-independent) majority of Linux constants, then override the handful that
+-- actually differ on MIPS via `is_mipsel` below. MIPS o32 differs from ARM on the
+-- fcntl O_* flags, the socket type numbers (SOCK_STREAM/DGRAM are swapped),
+-- SOCK_NONBLOCK, and a few errno values. Getting SOCK_DGRAM/SOCK_NONBLOCK wrong
+-- makes socket() return EINVAL, which broke the Wi-Fi control client
+-- (lj-wpaclient "Failed to initialize socket instance").
+local platform = ({ android_arm=0x1, android_arm64=0x2, android_x64=0x4, android_x86=0x8, linux_arm=0x10, linux_mipsel=0x10, linux_arm64=0x20, linux_x64=0x40, macos=0x80 })[platform_str]
 if not platform then
     error("unsupported platform: " .. platform_str)
 end
+local is_mipsel = platform_str == "linux_mipsel"
 
 -- clock_gettime & friends require librt on old glibc (< 2.17) versions...
 if ffi.os == "Linux" then
@@ -35,7 +43,9 @@ static const unsigned EINVAL = 22;
 static const unsigned ENODEV = 19;
 ]]
 
-if --[[ android_arm|android_arm64|android_x64|android_x86|linux_arm|linux_arm64|linux_x64 ]] bit.band(platform, 0x7f) ~= 0 then
+if --[[ mipsel ]] is_mipsel then
+ffi.cdef[[ static const unsigned ENOSYS = 89; ]]
+elseif --[[ android_arm|android_arm64|android_x64|android_x86|linux_arm|linux_arm64|linux_x64 ]] bit.band(platform, 0x7f) ~= 0 then
 ffi.cdef[[ static const unsigned ENOSYS = 38; ]]
 elseif --[[ macos ]] platform == 0x80 then
 ffi.cdef[[ static const unsigned ENOSYS = 78; ]]
@@ -46,7 +56,16 @@ static const unsigned EPERM = 1;
 static const unsigned EPIPE = 32;
 ]]
 
-if --[[ android_arm|android_arm64|android_x64|android_x86|linux_arm|linux_arm64|linux_x64 ]] bit.band(platform, 0x7f) ~= 0 then
+if --[[ mipsel ]] is_mipsel then
+ffi.cdef[[
+static const unsigned ETIME = 62;
+static const unsigned ETIMEDOUT = 145;
+static const unsigned O_APPEND = 8;
+static const unsigned O_CLOEXEC = 524288;
+static const unsigned O_CREAT = 256;
+static const unsigned O_NONBLOCK = 128;
+]]
+elseif --[[ android_arm|android_arm64|android_x64|android_x86|linux_arm|linux_arm64|linux_x64 ]] bit.band(platform, 0x7f) ~= 0 then
 ffi.cdef[[
 static const unsigned ETIME = 62;
 static const unsigned ETIMEDOUT = 110;
@@ -340,9 +359,16 @@ elseif --[[ macos ]] platform == 0x80 then
 ffi.cdef[[ static const unsigned SOCK_CLOEXEC = 0; ]]
 end
 
+-- MIPS swaps SOCK_STREAM(2)/SOCK_DGRAM(1) vs the generic 1/2.
+if --[[ mipsel ]] is_mipsel then
+ffi.cdef[[ static const unsigned SOCK_DGRAM = 1; ]]
+else
 ffi.cdef[[ static const unsigned SOCK_DGRAM = 2; ]]
+end
 
-if --[[ android_arm|android_arm64|android_x64|android_x86|linux_arm|linux_arm64|linux_x64 ]] bit.band(platform, 0x7f) ~= 0 then
+if --[[ mipsel ]] is_mipsel then
+ffi.cdef[[ static const unsigned SOCK_NONBLOCK = 128; ]]
+elseif --[[ android_arm|android_arm64|android_x64|android_x86|linux_arm|linux_arm64|linux_x64 ]] bit.band(platform, 0x7f) ~= 0 then
 ffi.cdef[[ static const unsigned SOCK_NONBLOCK = 2048; ]]
 elseif --[[ macos ]] platform == 0x80 then
 ffi.cdef[[ static const unsigned SOCK_NONBLOCK = 0; ]]
@@ -1011,7 +1037,14 @@ static const unsigned WNOHANG = 1;
 pid_t waitpid(pid_t, int *, int);
 ]]
 
-if --[[ android_arm|android_arm64|android_x64|android_x86|linux_arm|linux_arm64|linux_x64 ]] bit.band(platform, 0x7f) ~= 0 then
+if --[[ mipsel ]] is_mipsel then
+-- MIPS o32: MAP_ANONYMOUS = 0x800 (2048), NOT the 0x20 used on x86/ARM. With the
+-- wrong value, mmap(MAP_SHARED|MAP_ANONYMOUS, fd=-1) does not get the ANONYMOUS
+-- flag, tries to map fd -1 as a file, fails -> MAP_FAILED (0xffffffff). That is the
+-- unchecked pointer ReaderRolling:_rerenderInBackground() writes through -> SIGBUS
+-- (silent crash on any in-app font/size/margin reflow).
+ffi.cdef[[ static const unsigned MAP_ANONYMOUS = 2048; ]]
+elseif --[[ android_arm|android_arm64|android_x64|android_x86|linux_arm|linux_arm64|linux_x64 ]] bit.band(platform, 0x7f) ~= 0 then
 ffi.cdef[[ static const unsigned MAP_ANONYMOUS = 32; ]]
 elseif --[[ macos ]] platform == 0x80 then
 ffi.cdef[[ static const unsigned MAP_ANONYMOUS = 4096; ]]

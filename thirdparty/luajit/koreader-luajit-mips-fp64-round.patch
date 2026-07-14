@@ -1,0 +1,68 @@
+MIPS32: make math.floor/ceil/trunc and num2i64/u64 correct under FR=1 (fp64).
+
+LuaJIT's MIPS VM builds/reads the two 32-bit halves of a 64-bit double using the
+classic even/odd single-register pair convention (e.g. `mtc1 hi, f5` to set the
+high word of the double in f4, `mfc1 rt, f13` to read the high word of f12).
+That is only valid when the FPU runs in FR=0 mode (32-bit FP registers).
+
+The Ingenic X2000 (OBOOK 4.26, "ingenic" target) — like its whole userland
+(glibc 2.29 and every stock binary are -mfp64) — runs processes in FR=1 (fp64)
+mode, where f4/f5 (and f12/f13) are INDEPENDENT 64-bit registers. Under FR=1 the
+pair trick corrupts the 2^52 magic constant used by the round routines, so
+math.floor/ceil/trunc silently return their argument unchanged (identity), which
+also breaks Lua's `%` operator (implemented via lj_vm_floor). The JIT compiles
+math.floor to a call to the same lj_vm_floor, so both interpreter and JIT are
+affected.
+
+Fix: address the halves of a single 64-bit FPR with the MIPS32r2 fp64
+instructions mthc1 (move-to-high) / mfhc1 (move-from-high) instead of the odd
+register. Touches only the FR-sensitive GPR<->double-half moves in vm_round_hf
+(floor/ceil/trunc) and vm_num2u64/num2i64.
+
+NOTE: this makes the MIPS32 VM fp64-only. That is correct for the only MIPS
+consumer here (the fp64 "ingenic" device). It would need an FR=0/FR=1 build
+conditional to remain FR=0-compatible for a hypothetical fp32 MIPS target.
+
+diff --git a/src/vm_mips.dasc b/src/vm_mips.dasc
+index 9a39edd..30a19df 100644
+--- a/src/vm_mips.dasc
++++ b/src/vm_mips.dasc
+@@ -2559,9 +2559,9 @@ static void build_subroutines(BuildCtx *ctx)
+   |.macro vm_round_hf, func
+   |  lui TMP0, 0x4330			// Hiword of 2^52 (double).
+   |  mtc1 r0, f4
+-  |  mtc1 TMP0, f5
++  |  mthc1 TMP0, f4			// fp64: set hiword of f4 (was: mtc1 TMP0,f5 pair).
+   |  abs.d FRET2, FARG1			// |x|
+-  |    mfc1 AT, FARG1HI
++  |    mfhc1 AT, FARG1			// fp64: read hiword of x (was: mfc1 AT,FARG1HI).
+   |  c.olt.d 0, FRET2, f4
+   |   add.d FRET1, FRET2, f4		// (|x| + 2^52) - 2^52
+   |  bc1f 0, >1				// Truncate only if |x| < 2^52.
+@@ -2573,7 +2573,7 @@ static void build_subroutines(BuildCtx *ctx)
+   |   lui TMP0, 0x3ff0			// Hiword of +1 (double).
+   |.endif
+   |.if "func" == "trunc"
+-  |   mtc1 TMP0, f5
++  |   mthc1 TMP0, f4			// fp64: hiword of +-1.0 into f4 (was: mtc1 TMP0,f5).
+   |  c.olt.d 0, FRET2, FRET1		// |x| < result?
+   |   sub.d FRET2, FRET1, f4
+   |  movt.d FRET1, FRET2, 0		// If yes, subtract +1.
+@@ -2582,7 +2582,7 @@ static void build_subroutines(BuildCtx *ctx)
+   |.  movn.d FRET1, FRET2, AT		// Merge sign bit back in.
+   |.else
+   |  neg.d FRET2, FRET1
+-  |   mtc1 TMP0, f5
++  |   mthc1 TMP0, f4			// fp64: hiword of +-1.0 into f4 (was: mtc1 TMP0,f5).
+   |  movn.d FRET1, FRET2, AT		// Merge sign bit back in.
+   |.if "func" == "ceil"
+   |  c.olt.d 0, FRET1, FARG1		// x > result?
+@@ -2879,7 +2879,7 @@ static void build_subroutines(BuildCtx *ctx)
+   |// uint64_t lj_vm_num2u64(double x)
+   |->vm_num2u64:
+   |.if FPU
+-  |  mfc1 SFARG1HI, FARG1HI
++  |  mfhc1 SFARG1HI, FARG1			// fp64: hiword of x (was: mfc1 SFARG1HI,FARG1HI).
+   |  mfc1 SFARG1LO, FARG1
+   |.endif
+   |  srl TMP0, SFARG1HI, 20

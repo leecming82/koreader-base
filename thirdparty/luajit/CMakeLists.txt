@@ -4,6 +4,9 @@ set(BINARY_DIR ${SOURCE_DIR})
 list(APPEND PATCH_FILES koreader-luajit-makefile-tweaks.patch)
 # Enable table.pack & table.unpack w/o the rest of the -DLUAJIT_ENABLE_LUA52COMPAT baggage...
 list(APPEND PATCH_FILES koreader-luajit-enable-table_pack.patch)
+# MIPS32 fp64 (FR=1): fix math.floor/ceil/trunc + num2i64/u64 which assumed the
+# FR=0 even/odd register-pair convention (breaks on the fp64 Ingenic X2000).
+list(APPEND PATCH_FILES koreader-luajit-mips-fp64-round.patch)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     # Debugging is a go!

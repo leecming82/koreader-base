@@ -224,6 +224,11 @@ else ifeq ($(TARGET), pocketbook)
 		CHOST?=arm-linux-gnueabi
 	endif
 	GLIBC_VERSION_MAX = 2.5
+else ifeq ($(TARGET), ingenic)
+	# Guowen/OBOOK 4.26 & C1 Max — Ingenic X2000, mipsel MIPS32r2 o32 nan2008 glibc 2.29
+	INGENIC=1
+	CHOST?=mips-linux-gnu
+	GLIBC_VERSION_MAX = 2.29
 else ifeq ($(TARGET), remarkable)
 	CHOST?=arm-remarkable-linux-gnueabihf
 	REMARKABLE=1
@@ -456,6 +461,8 @@ ARMV7_A7_ARCH:=-march=armv7-a -mtune=cortex-a7 -mfpu=neon -mthumb
 ARMV7_A53_ARCH:=-march=armv7-a -mtune=cortex-a53 -mfpu=neon -mthumb
 # Cortex A53 (reMarkable Paper Pro)
 ARM64_A53_ARCH:=-march=armv8-a+crc+crypto -mtune=cortex-a53
+# Ingenic X2000 XBurst2 — o32 MIPS32r2, nan2008, little-endian (fp64 hardfloat is toolchain default)
+MIPS32R2_ARCH:=-march=mips32r2 -mabi=32 -mnan=2008 -EL
 # Mirror the NDK's armeabi-v7a APP_ABI (cf. #201)
 ifeq ($(ANDROID_ARCH), arm)
 	ANDROID_ARM_ARCH:=-march=armv7-a -mfpu=vfpv3-d16
@@ -549,6 +556,8 @@ else ifeq ($(TARGET), kindle-legacy)
 	# We're not multi-threaded, so, whatever.
 	# c.f., https://github.com/koreader/koreader/discussions/11246
         COMPAT_CXXFLAGS+=-fno-threadsafe-statics
+else ifeq ($(TARGET), ingenic)
+	TARGET_CFLAGS:=$(MIPS32R2_ARCH)
 else ifdef ANDROID
 	ifeq ($(ANDROID_ARCH), arm)
 		TARGET_CFLAGS:=$(ANDROID_ARM_ARCH)
@@ -625,7 +634,12 @@ ifneq (yes,$(firstword $(call hasminstd,$(CXX),c++,__cplusplus,201700)))
 endif
 
 # Improve reproducibility.
+# Ingenic gcc 7.2.0 predates -ffile-prefix-map (gcc 8+); use -fdebug-prefix-map.
+ifeq ($(TARGET), ingenic)
+BASE_CFLAGS += -fdebug-prefix-map=$(abspath $(KOR_BASE))/=
+else
 BASE_CFLAGS += -ffile-prefix-map=$(abspath $(KOR_BASE))/=
+endif
 
 CFLAGS:=$(BASE_CFLAGS) $(QFLAGS) $(CSTD_FLAGS)
 CXXFLAGS:=$(BASE_CFLAGS) $(QFLAGS) $(CXXSTD_FLAGS)
@@ -901,6 +915,8 @@ else ifneq (,$(filter i686-%,$(TARGET_MACHINE)))
   CMAKE_SYSTEM_PROCESSOR = i686
 else ifneq (,$(filter x86_64-%,$(TARGET_MACHINE)))
   CMAKE_SYSTEM_PROCESSOR = x86_64
+else ifneq (,$(filter mips-% mipsel-%,$(TARGET_MACHINE)))
+  CMAKE_SYSTEM_PROCESSOR = mipsel
 else
   $(error CMAKE_SYSTEM_PROCESSOR not set! (TARGET_MACHINE is $(TARGET_MACHINE)))
 endif
@@ -1066,6 +1082,8 @@ else ifneq (,$(filter i686-%,$(TARGET_MACHINE)))
   MESON_CROSS_CPU_FAMILY = x86
 else ifneq (,$(filter x86_64-%,$(TARGET_MACHINE)))
   MESON_CROSS_CPU_FAMILY = x86_64
+else ifneq (,$(filter mips-% mipsel-%,$(TARGET_MACHINE)))
+  MESON_CROSS_CPU_FAMILY = mips
 else
   $(error MESON_CROSS_CPU_FAMILY not set! (TARGET_MACHINE is $(TARGET_MACHINE)))
 endif
