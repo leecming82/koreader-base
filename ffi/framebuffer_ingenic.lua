@@ -39,16 +39,34 @@ local bit = require("bit")
 -- Not in ffi/linux_fb_h; define the standard fbdev pan ioctl.
 local FBIOPAN_DISPLAY = 0x4606
 
--- Waveform (eink_mode) selection per refresh class. Confirmed on-panel (2026-07-14):
---   mode 0 = fast, non-flashing partial (A2-ish) -- pure-black text is crisp, but
---            grays wash out and drawing over existing content ghosts -> faint UI; ~737ms.
---   mode 1 = full GC16-style flash -- solid blacks; ~1845ms.
---   mode 2 = gray4 (4-level) -- non-flashing; ~1098ms. (A 2026-07-14 note called this
---            NOT idempotent -- "a re-drive settles a shade lighter". RETRACTED: the
---            2026-07-17 ramp below held tone over 10s and on an identical re-drive.)
--- So: page-turns (mostly black text) use the fast mode; full refreshes use the full
--- flashing mode; menus/dialogs use gray4, which is the only mode that renders gray at
--- all (see the measurement below) -- needed so disabled items look disabled.
+-- Waveform (eink_mode) selection per refresh class.
+--
+-- eink_mode is 0..3, NOT 0..2 -- mode 3 was missed until 2026-07-17 (stock's own
+-- script/refreshall.sh uses it on this SoC, and libeinkcommon only ever writes 0 and 2,
+-- so it never showed up in a userspace trace). The four modes are a 2x2 of
+-- {1-bit, gray4} x {partial, full}, confirmed against the driver disassembly
+-- (eink_qingyue426.ko: rgb565_to_1bit / rgb565_to_2bit1 / rgb565_to_2bit2) and timed
+-- on-panel 2026-07-17:
+--   mode 0 = 1-bit, partial/non-flashing (A2-ish). 2 levels.  ~707ms
+--   mode 1 = 1-bit, full flash.             2 levels.  ~1846ms
+--   mode 2 = gray4, partial, custom lut_grayscale. 3 levels (BUGGY). ~1085ms
+--   mode 3 = gray4, full, panel OTP waveform.      4 levels.         ~1317ms
+--
+-- mode 1 is MONOCHROME -- its 1-bit quantizer cuts at Y>=192, which is exactly the
+-- 0xBB(black)/0xCC(white) boundary a 16-band ramp measured. It has no grays to render,
+-- at any value; an earlier note here claiming it shows "solid blacks AND grays" was
+-- wrong and cost a lot of chasing.
+--
+-- mode 2 is gray4 but its quantizer (rgb565_to_2bit2) aliases black onto white's plane
+-- code (0,0) and never emits (1,1), so LUT3 of the driver's embedded lut_grayscale is
+-- dead code -> only 3 of 4 tones. mode 3 (rgb565_to_2bit1) emits all four. Measured: a
+-- ramp shows 4 distinct tones under mode 3, 3 under mode 2.
+--
+-- So: mode 3 for anything that needs real gray (UI chrome, images) -- it is both better
+-- AND cheaper than mode 1. Page-turns stay 1-bit: text is black-on-white, mode 0 is the
+-- fastest thing that renders it, and keeping full refreshes 1-bit too (mode 1) means the
+-- periodic promoted full refresh matches the mode-0 partials instead of subtly
+-- re-weighting the text every Nth page.
 -- Per refresh class: {eink_mode, eink_dither}. MEASURED 2026-07-17 with a 16-band
 -- labelled ramp (0x00..0xFF step 0x11), one drive per mode, read off-panel:
 --   {1,0} -> BINARIZES: cut between 0xBB (black) and 0xCC (white). No middle tones at
@@ -56,19 +74,45 @@ local FBIOPAN_DISPLAY = 0x4606
 --   {2,0} -> three real tiers: black <=0x77, gray 0x88..0xBB, white >=0xCC. Held tone
 --           for 10s AND on an identical re-drive => idempotent for solid areas.
 -- dither=1 spatially dithers (tone for photos, but makes gray *text* faint).
-local EINK_FULL     = {1, 1}  -- full flash: book full-page + images. The dither value
-                              -- here is a fallback; refreshFullImp honors KOReader's
-                              -- own per-refresh hint instead. See refreshFullImp.
--- EXPERIMENT (2026-07-17): UI back on gray4, BOTH classes together so they can't mix.
--- Why revisit: under {1,0} disabled menu items (COLOR_DARK_GRAY 0x88) render solid
--- black, i.e. indistinguishable from enabled -- a real bug, and unfixable at {1,0}
--- since that mode has no gray.
--- Hypothesis for the old "menu fades light after it opens": NOT a gray4 settle (the
--- ramp above is idempotent), but a MIX of classes -- open via flashui{1,0} (AA glyph
--- edges + 0x88 chrome fall under the 0xC0 cut, snap black => looks solid/bold) then an
--- in-menu ui{2,0} re-render (same pixels become true gray => "faded"). Hence: identical.
--- REVERT BOTH TO {1,0} if menus read too light, or ghost (mode 2 is non-flashing).
-local EINK_UI       = {2, 0}  -- menus/dialogs: gray4, real grays, ~1098ms
+local EINK_TEXT_FULL = {1, 0} -- book full-page: 1-bit, matches the mode-0 partials
+local EINK_IMG_FULL  = {3, 1} -- images: 4-level + dither. refreshFullImp picks between
+                              -- these two off KOReader's own hint. See refreshFullImp.
+-- UI is on mode 2 despite mode 2 being the *buggy* gray4 path, and that is deliberate.
+-- KOReader renders anti-aliased text; on a 219dpi panel a large share of glyph pixels
+-- are AA edges, so how a mode buckets the dark end decides how BOLD text looks:
+--   mode 1: Y<192 -> black. Crushes nearly every AA edge black => boldest, but 1-bit,
+--           so COLOR_DARK_GRAY disabled items also go solid black (bug).
+--   mode 2: Y<64 and Y>=192 share a code, so 0x00..0x77 all render black => still bold,
+--           and 0x88..0xBB is a real gray => disabled items look disabled.
+--   mode 3: correct 4 tones, so 0x44..0x77 becomes dark gray instead of black => AA
+--           edges stop being crushed and UI text reads visibly FAINT (user-confirmed).
+-- i.e. mode 2's aliasing bug accidentally bolds text while still leaving one gray, which
+-- is why it is the best UI compromise on this panel. Correctness is not the goal here;
+-- legibility at 219dpi is. Both UI classes stay identical so a menu that opens via
+-- flashui and then takes an in-menu ui refresh cannot re-render in a different waveform.
+-- UI is on mode 2 despite mode 2 being the *buggy* gray4 path, and that is deliberate.
+-- KOReader renders anti-aliased text; on a 219dpi panel a large share of glyph pixels
+-- are AA edges, so how a mode buckets the dark end decides how BOLD text looks:
+--   mode 1: Y<192 -> black. Crushes nearly every AA edge black => boldest, but 1-bit,
+--           so COLOR_DARK_GRAY disabled items also go solid black (bug).
+--   mode 2: Y<64 and Y>=192 share a code, so 0x00..0x77 all render black => still bold,
+--           and 0x88..0xBB is a real gray => disabled items look disabled.
+--   mode 3: correct 4 tones, so 0x44..0x77 becomes dark gray instead of black => AA
+--           edges stop being crushed and UI text reads visibly FAINT (user-confirmed).
+-- i.e. mode 2's aliasing bug accidentally bolds text while still leaving one gray, which
+-- is why it is the best UI compromise on this panel. Correctness is not the goal here;
+-- legibility at 219dpi is.
+--
+-- Tried and rejected (2026-07-17): thresholding UI glyph coverage to 1-bit in
+-- ffi/freetype.lua, so text would not depend on the waveform crushing its AA edges and
+-- the UI could take mode 3's 4 correct tones. Renders badly -- hinting is off
+-- (FT_LOAD_NO_HINTING, to protect synthetic bold), so stems sit on fractional pixels and
+-- AA is what hides it; thresholding exposes uneven stems. Would need hinting re-enabled
+-- first, which fights synthetic bold. Not pursued.
+--
+-- Both UI classes stay identical so a menu that opens via flashui and then takes an
+-- in-menu ui refresh cannot re-render in a different waveform.
+local EINK_UI       = {2, 0}  -- menus/dialogs: gray4 partial, 3 tones, bold-ish, ~1085ms
 local EINK_FLASH_UI = {2, 0}  -- menu/dialog open -- kept identical to EINK_UI on purpose
 local EINK_PARTIAL  = {0, 1}  -- fast page-turns (black text renders fine)
 local EINK_FAST     = {0, 1}
@@ -150,12 +194,13 @@ end
 --
 -- `d` is KOReader's own "this content needs dithering" hint, and it is exactly the
 -- image/not-image signal we want: ReaderView sets it per-page from `colorful`,
--- ImageWidget/ImageViewer/BookStatus set it, plain text pages leave it false. On this
--- 2-bit panel dither=1 is the only way to fake tone for photos, but it renders gray
--- *text*/chrome faint -- so honor the hint instead of always dithering. (SW dithering
--- is off here: setupDithering only enables it at 8bpp, and we're RGB565 16bpp.)
+-- ImageWidget/ImageViewer/BookStatus set it, plain text pages leave it false. So use it
+-- to pick the whole waveform, not just the dither bit: images get gray4+dither (4 tones
+-- + Bayer, the best this panel can do for a photo), text gets the 1-bit path that
+-- matches the mode-0 partials it sits between. (SW dithering can't help either way:
+-- setupDithering only enables it at 8bpp, and we're RGB565 16bpp.)
 function framebuffer:refreshFullImp(x, y, w, h, d)
-    self:_einkRefresh({EINK_FULL[1], d and 1 or 0}, true)
+    self:_einkRefresh(d and EINK_IMG_FULL or EINK_TEXT_FULL, true)
 end
 
 function framebuffer:refreshPartialImp(x, y, w, h, d)
