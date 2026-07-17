@@ -41,28 +41,35 @@ local FBIOPAN_DISPLAY = 0x4606
 
 -- Waveform (eink_mode) selection per refresh class. Confirmed on-panel (2026-07-14):
 --   mode 0 = fast, non-flashing partial (A2-ish) -- pure-black text is crisp, but
---            grays wash out and drawing over existing content ghosts -> faint UI.
---   mode 1 = full GC16-style flash -- solid blacks AND grays, clean; ~1.8s.
---   mode 2 = gray4 (4-level) -- non-flashing, but NOT idempotent: a single gray4
---            re-drive drives dark then SETTLES a shade lighter, so menus rendered
---            with it come up "black enough" then visibly fade to a too-light tone.
+--            grays wash out and drawing over existing content ghosts -> faint UI; ~737ms.
+--   mode 1 = full GC16-style flash -- solid blacks; ~1845ms.
+--   mode 2 = gray4 (4-level) -- non-flashing; ~1098ms. (A 2026-07-14 note called this
+--            NOT idempotent -- "a re-drive settles a shade lighter". RETRACTED: the
+--            2026-07-17 ramp below held tone over 10s and on an identical re-drive.)
 -- So: page-turns (mostly black text) use the fast mode; full refreshes use the full
--- flashing mode; and menus/dialogs use the full flashing mode too (mode 1) so their
--- gray chrome + text render SOLID and stay put (the gray4 light-settle above is
--- exactly the "menu fades light after it opens" bug -- do NOT use mode 2 for UI).
--- Per refresh class: {eink_mode, eink_dither}. dither=0 THRESHOLDS gray (pushes
--- KOReader's gray menu chrome toward solid black -> readable); dither=1 spatially
--- dithers (good for photos, but makes gray *text* look faint on this 2-bit panel).
-local EINK_FULL     = {1, 1}  -- full flash, dithered: book full-page + images
-local EINK_UI       = {1, 0}  -- menus/dialogs: mode-1 GC16 flash, dither off.
-                              -- Solid black text + solid gray chrome that STAYS
-                              -- (no gray4 light-settle). Flashes (~1.8s) -- accepted
-                              -- as the tradeoff for consistently readable menus.
-local EINK_FLASH_UI = {1, 0}  -- "flashui"/"flashpartial" (menu/dialog open with a
-                              -- ghost-clearing flash). Same solid mode-1/dither-off
-                              -- as EINK_UI. Without this override these classes fall
-                              -- through to refreshFull -> EINK_FULL {1,1} (dither ON),
-                              -- which re-renders the just-opened menu faint/light.
+-- flashing mode; menus/dialogs use gray4, which is the only mode that renders gray at
+-- all (see the measurement below) -- needed so disabled items look disabled.
+-- Per refresh class: {eink_mode, eink_dither}. MEASURED 2026-07-17 with a 16-band
+-- labelled ramp (0x00..0xFF step 0x11), one drive per mode, read off-panel:
+--   {1,0} -> BINARIZES: cut between 0xBB (black) and 0xCC (white). No middle tones at
+--           all, so mode 1 + dither off cannot express gray, at any value.
+--   {2,0} -> three real tiers: black <=0x77, gray 0x88..0xBB, white >=0xCC. Held tone
+--           for 10s AND on an identical re-drive => idempotent for solid areas.
+-- dither=1 spatially dithers (tone for photos, but makes gray *text* faint).
+local EINK_FULL     = {1, 1}  -- full flash: book full-page + images. The dither value
+                              -- here is a fallback; refreshFullImp honors KOReader's
+                              -- own per-refresh hint instead. See refreshFullImp.
+-- EXPERIMENT (2026-07-17): UI back on gray4, BOTH classes together so they can't mix.
+-- Why revisit: under {1,0} disabled menu items (COLOR_DARK_GRAY 0x88) render solid
+-- black, i.e. indistinguishable from enabled -- a real bug, and unfixable at {1,0}
+-- since that mode has no gray.
+-- Hypothesis for the old "menu fades light after it opens": NOT a gray4 settle (the
+-- ramp above is idempotent), but a MIX of classes -- open via flashui{1,0} (AA glyph
+-- edges + 0x88 chrome fall under the 0xC0 cut, snap black => looks solid/bold) then an
+-- in-menu ui{2,0} re-render (same pixels become true gray => "faded"). Hence: identical.
+-- REVERT BOTH TO {1,0} if menus read too light, or ghost (mode 2 is non-flashing).
+local EINK_UI       = {2, 0}  -- menus/dialogs: gray4, real grays, ~1098ms
+local EINK_FLASH_UI = {2, 0}  -- menu/dialog open -- kept identical to EINK_UI on purpose
 local EINK_PARTIAL  = {0, 1}  -- fast page-turns (black text renders fine)
 local EINK_FAST     = {0, 1}
 
@@ -140,8 +147,15 @@ end
 
 -- Region args are ignored: the hardware only does full-frame pans.
 -- Full refreshes always flush (never deduped) -- they're the de-ghost class.
+--
+-- `d` is KOReader's own "this content needs dithering" hint, and it is exactly the
+-- image/not-image signal we want: ReaderView sets it per-page from `colorful`,
+-- ImageWidget/ImageViewer/BookStatus set it, plain text pages leave it false. On this
+-- 2-bit panel dither=1 is the only way to fake tone for photos, but it renders gray
+-- *text*/chrome faint -- so honor the hint instead of always dithering. (SW dithering
+-- is off here: setupDithering only enables it at 8bpp, and we're RGB565 16bpp.)
 function framebuffer:refreshFullImp(x, y, w, h, d)
-    self:_einkRefresh(EINK_FULL, true)
+    self:_einkRefresh({EINK_FULL[1], d and 1 or 0}, true)
 end
 
 function framebuffer:refreshPartialImp(x, y, w, h, d)
