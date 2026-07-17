@@ -114,8 +114,22 @@ local EINK_IMG_FULL  = {3, 1} -- images: 4-level + dither. refreshFullImp picks 
 -- in-menu ui refresh cannot re-render in a different waveform.
 local EINK_UI       = {2, 0}  -- menus/dialogs: gray4 partial, 3 tones, bold-ish, ~1085ms
 local EINK_FLASH_UI = {2, 0}  -- menu/dialog open -- kept identical to EINK_UI on purpose
-local EINK_PARTIAL  = {0, 1}  -- fast page-turns (black text renders fine)
-local EINK_FAST     = {0, 1}
+-- EXPERIMENT (2026-07-17): page-turns on gray4 instead of 1-bit.
+-- crengine DOES anti-alias book text (FT_LOAD_TARGET_LIGHT, _drawMonochrome off), but
+-- mode 0 is 1-bit with its cut at Y>=192, so every edge pixel over ~25% coverage is
+-- crushed black -- the AA is computed and then thrown away. Mode 2 keeps 3 tones, so the
+-- edges actually survive.
+-- Why this might work here when it failed for the UI: faintness is a THIN STEM problem.
+-- At UI sizes (~16px) unhinted stems never reach full coverage, so they live or die by
+-- the cut. Book text at size 44 has 3-4px stems with solid fully-covered cores that
+-- render black under any waveform -- only the edges are partial. So this should smooth
+-- glyphs without losing weight.
+-- COST: ~1085ms vs ~707ms, i.e. +53% on the one interaction done hundreds of times a
+-- session, plus the matching panel-drive battery cost. Revert to {0, 1} if the latency
+-- is not worth the smoothing. Mode 3 (4 tones) is NOT a candidate here: it is the *full*
+-- waveform and would likely flash every page turn.
+local EINK_PARTIAL  = {2, 0}  -- page-turns: gray4 partial, 3 tones, ~1085ms
+local EINK_FAST     = {0, 1}  -- scrolling stays 1-bit/fast -- latency matters most here
 
 local SYS_EINK_MODE   = "/sys/bus/spi/devices/spi1.0/eink_mode"
 local SYS_EINK_DITHER = "/sys/bus/spi/devices/spi1.0/eink_dither"
