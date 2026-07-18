@@ -167,7 +167,11 @@ end
 
 -- Selecting the most suitable implementation for given set of abilities
 local method, branch
-if is_LuaJIT and ffi then
+if is_LuaJIT and ffi and LuaJIT_arch ~= "mipsel" and LuaJIT_arch ~= "mips" then
+   -- The FFI branch relies on int64 cdata arithmetic that miscompiles on the
+   -- Ingenic mipsel LuaJIT (string.char() gets a cdata it cannot coerce), so
+   -- fall through to the pure-Lua "LJ" branch there. Scoped to mips rather
+   -- than disabled outright, to leave every other target on the fast path.
    method = "Using 'ffi' library of LuaJIT"
    branch = "FFI"
 elseif is_LuaJIT then
@@ -4499,7 +4503,7 @@ local function md5(message)
          if tail then
             local final_blocks = {tail, "\128", string_rep("\0", (-9 - length) % 64)}
             tail = nil
-            length = length * 8  -- convert "byte-counter" to "bit-counter"
+            length = tonumber(length) * 8  -- convert "byte-counter" to "bit-counter"
             for j = 4, 11 do
                local low_byte = length % 256
                final_blocks[j] = char(low_byte)
