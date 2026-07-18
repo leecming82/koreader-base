@@ -3,6 +3,18 @@ include_guard(GLOBAL)
 include(koreader_thirdparty_common)
 include(koreader_thirdparty_libs)
 
+# The Ingenic X2000 port is EPUB-only. Tesseract needs C++17 <filesystem>, which
+# the gcc 7.2.0 toolchain lacks, so it cannot build at all; MuPDF/DjVu would OOM
+# in 128 MB of RAM regardless. Drop the whole PDF/OCR chain from the default
+# `all` target -- crengine decodes its own in-document images. Defined here (not
+# in cmake/CMakeLists.txt) because both that superbuild and the koreader
+# subproject include this file, and both need the flag.
+if(INGENIC)
+    set(NO_PDF_STACK EXCLUDE_FROM_ALL)
+else()
+    set(NO_PDF_STACK)
+endif()
+
 function(declare_koreader_target NAME)
     cmake_parse_arguments("" "EXCLUDE_FROM_ALL" "SUFFIX;TYPE;VISIBILITY" "DEPENDS;SOURCES" ${ARGN})
     set(${NAME}_TYPE ${_TYPE} PARENT_SCOPE)
@@ -76,7 +88,7 @@ endfunction()
 # KOREADER LIBRARIES. {{{
 
 # blitbuffer
-if(ANDROID OR CERVANTES OR KINDLE OR KOBO OR POCKETBOOK OR REMARKABLE OR SONY_PRSTUX OR USE_SDL)
+if(ANDROID OR CERVANTES OR INGENIC OR KINDLE OR KOBO OR POCKETBOOK OR REMARKABLE OR SONY_PRSTUX OR USE_SDL)
     set(EXCLUDE_FROM_ALL)
 else()
     set(EXCLUDE_FROM_ALL EXCLUDE_FROM_ALL)
@@ -104,6 +116,7 @@ declare_koreader_target(
 declare_koreader_target(
     koreader-djvu TYPE monolibtic
     DEPENDS blitbuffer djvulibre::djvulibre libk2pdfopt::k2pdfopt luajit::luajit
+    ${NO_PDF_STACK}
     SOURCES djvu.c
     SUFFIX .so
     VISIBILITY hidden
@@ -159,6 +172,7 @@ declare_koreader_target(
 declare_koreader_target(
     wrap-mupdf TYPE monolibtic
     DEPENDS mupdf::mupdf
+    ${NO_PDF_STACK}
     SOURCES wrap-mupdf.c
     VISIBILITY hidden
 )

@@ -229,6 +229,7 @@ else ifeq ($(TARGET), ingenic)
 	INGENIC=1
 	CHOST?=mips-linux-gnu
 	GLIBC_VERSION_MAX = 2.29
+	USE_LJ_WPACLIENT=1
 else ifeq ($(TARGET), remarkable)
 	CHOST?=arm-remarkable-linux-gnueabihf
 	REMARKABLE=1
@@ -1011,6 +1012,7 @@ set(GLIBC_VERSION_MAX  $(GLIBC_VERSION_MAX))
 # Platform flags.
 set(ANDROID        $(ANDROID))
 set(CERVANTES      $(CERVANTES))
+set(INGENIC        $(INGENIC))
 set(KINDLE         $(KINDLE))
 set(KOBO           $(KOBO))
 set(LEGACY         $(LEGACY))

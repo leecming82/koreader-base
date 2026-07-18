@@ -325,7 +325,7 @@ declare_project(thirdparty/kobo-usbms ${EXCLUDE_FROM_ALL})
 declare_project(thirdparty/koreader-lfs DEPENDS luajit)
 
 # leptonica
-declare_project(thirdparty/leptonica DEPENDS libpng)
+declare_project(thirdparty/leptonica DEPENDS libpng ${NO_PDF_STACK})
 
 # libarchive
 set(DEPENDS zlib zstd)
@@ -338,7 +338,7 @@ declare_project(thirdparty/libarchive DEPENDS ${DEPENDS})
 declare_project(thirdparty/libjpeg-turbo)
 
 # libk2pdfopt
-declare_project(thirdparty/libk2pdfopt DEPENDS leptonica libpng tesseract zlib)
+declare_project(thirdparty/libk2pdfopt DEPENDS leptonica libpng tesseract zlib ${NO_PDF_STACK})
 
 # libpng
 declare_project(thirdparty/libpng DEPENDS zlib EXCLUDE_FROM_ALL)
@@ -415,7 +415,7 @@ declare_project(thirdparty/miniconv EXCLUDE_FROM_ALL)
 declare_project(thirdparty/minizip EXCLUDE_FROM_ALL)
 
 # mupdf
-declare_project(thirdparty/mupdf DEPENDS freetype2 harfbuzz libarchive libjpeg-turbo libwebp minizip zlib)
+declare_project(thirdparty/mupdf DEPENDS freetype2 harfbuzz libarchive libjpeg-turbo libwebp minizip zlib ${NO_PDF_STACK})
 
 # nanosvg
 declare_project(thirdparty/nanosvg)
@@ -496,7 +496,7 @@ set(DEPENDS leptonica)
 if(ANDROID)
     list(APPEND DEPENDS cpu_features)
 endif()
-declare_project(thirdparty/tesseract DEPENDS ${DEPENDS})
+declare_project(thirdparty/tesseract DEPENDS ${DEPENDS} ${NO_PDF_STACK})
 
 # tree-sitter
 declare_project(thirdparty/tree-sitter EXCLUDE_FROM_ALL)
@@ -784,6 +784,12 @@ elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "i686")
     set(LUAJIT_ARCH "x86")
 elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
     set(LUAJIT_ARCH "x64")
+elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "mipsel")
+    # Unblocks configure only. `posix-ffi` is EXCLUDE_FROM_ALL and there is no
+    # ffi-cdecl/posix_h_linux_mipsel.lua yet -- ffi/posix_h.lua currently carries
+    # a hand-maintained mipsel branch. Regenerating it properly (struct stat
+    # layout etc.) still wants a gen_merged_cdecl_h run with the Ingenic gcc.
+    set(LUAJIT_ARCH "mipsel")
 else()
     message(FATAL_ERROR "unsupported CMAKE_SYSTEM_PROCESSOR value: ${CMAKE_SYSTEM_PROCESSOR}")
 endif()
